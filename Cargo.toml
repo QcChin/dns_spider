@@ -1,0 +1,33 @@
+[package]
+name = "dns_spider"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["pcap"]
+xdp = ["libbpf-rs"]  # 启用XDP支持
+dpdk = ["demikernel"] # 启用DPDK支持
+quic = ["quinn"]     # 启用DoQ支持
+
+[dependencies]
+tokio = { version = "1.44.2", features = ["rt-multi-thread", "macros", "net"] }
+crossbeam = "0.8.4"
+lazy_static = "1.5.0"
+pcap = { version = "2.2.0", optional = true }
+libbpf-rs = { version = "0.24.8", optional = true }
+demikernel = { version = "1.5.13", optional = true }
+nom = "8.0.0"
+async-tls = "0.13.0"
+h2 = "0.4.9"
+quinn = { version = "0.11.7", optional = true }
+rdkafka = { version = "0.37.0", optional = true }
+prost = "0.13.5"
+tokio-fs = "0.1.7"
+prometheus = "0.14.0"
+tokio-console = "0.1.13"
+colored = "2.1.0"
+ctrlc = "3.4.2"
+
+[dev-dependencies]
+criterion = "0.5.1"
+test-case = "3.3.1"
