@@ -62,28 +62,23 @@ impl TcpDnsParser {
         // 会话标识
         let session_id = (src_ip, dst_ip, src_port, dst_port);
         
-        // 获取或创建会话
-        let session = self.tcp_sessions.entry(session_id).or_insert_with(|| {
-            // 如果超过最大会话数，清理最旧的会话
+        // 在闭包外先做清理
+        if self.tcp_sessions.len() >= self.max_sessions {
+            self.cleanup_sessions();
             if self.tcp_sessions.len() >= self.max_sessions {
-                self.cleanup_sessions();
-                
-                // 如果仍然超过限制，移除最旧的会话
-                if self.tcp_sessions.len() >= self.max_sessions {
-                    let oldest = self.tcp_sessions.iter()
-                        .min_by_key(|(_, s)| s.last_seen)
-                        .map(|(k, _)| *k);
-                    
-                    if let Some(key) = oldest {
-                        self.tcp_sessions.remove(&key);
-                    }
+                let oldest = self.tcp_sessions.iter()
+                    .min_by_key(|(_, s)| s.last_seen)
+                    .map(|(k, _)| *k);
+                if let Some(key) = oldest {
+                    self.tcp_sessions.remove(&key);
                 }
             }
-            
-            TcpSession {
-                buffer: Vec::new(),
-                last_seen: self.current_time_ms,
-            }
+        }
+
+        // 然后只在闭包里构造新会话
+        let session = self.tcp_sessions.entry(session_id).or_insert_with(|| TcpSession {
+            buffer: Vec::new(),
+            last_seen: self.current_time_ms,
         });
         
         // 更新最后见到时间

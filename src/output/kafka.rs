@@ -1,29 +1,30 @@
 //! Kafka输出实现
 //! 将DNS消息输出到Kafka
 
-use rdkafka::config::ClientConfig;
-use rdkafka::producer::{FutureProducer, FutureRecord};
 use std::time::Duration;
 
-use crate::output::{KafkaConfig, Output};
+use crate::output::KafkaConfig;
+use crate::output::Output;
 use crate::protocols::dns::DnsMessage;
+use kafka::client::RequiredAcks;
+use kafka::producer::Record;
+use kafka::producer::{Producer};
 
 /// Kafka输出
 pub struct KafkaOutput {
     /// 配置
     config: KafkaConfig,
     /// Kafka生产者
-    producer: FutureProducer,
+    producer: Producer,
 }
 
 impl KafkaOutput {
     /// 创建新的Kafka输出
     pub fn new(config: KafkaConfig) -> Result<Self, String> {
         // 创建Kafka生产者
-        let producer: FutureProducer = ClientConfig::new()
-            .set("bootstrap.servers", &config.brokers)
-            .set("client.id", &config.client_id)
-            .set("message.timeout.ms", "5000")
+        let producer: Producer = Producer::from_hosts(vec![config.brokers.clone()])
+            .with_ack_timeout(Duration::from_secs(5))
+            .with_required_acks(RequiredAcks::One)
             .create()
             .map_err(|e| format!("Failed to create Kafka producer: {}", e))?;
 
@@ -99,15 +100,14 @@ impl Output for KafkaOutput {
         let formatted = self.format_message_json(message);
         let key = format!("{}", message.transaction_id);
 
+        let topic = self.config.topic.clone();
         // 发送到Kafka
-        let record = FutureRecord::to(&self.config.topic)
-            .payload(&formatted)
-            .key(&key);
+        let record = Record::from_value(&topic, formatted);
 
         // 异步发送，但这里简单等待结果
-        match self.producer.send(record, Duration::from_secs(5)).wait() {
+        match self.producer.send(&record) {
             Ok(_) => Ok(()),
-            Err((e, _)) => Err(format!("Failed to send message to Kafka: {}", e)),
+            Err(e) => Err(format!("Failed to send message to Kafka: {}", e)),
         }
     }
 

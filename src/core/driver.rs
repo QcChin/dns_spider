@@ -5,12 +5,11 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::capture::{CaptureConfig, PacketCapture};
-use crate::core::mempool::MemoryPool;
+use crate::capture::{CaptureConfig, create_capture};
 use crate::core::stats::StatsCounter;
 use crate::output::{OutputConfig, OutputManager};
 use crate::protocols::detect::ProtocolDetector;
-use crate::protocols::dns::{DnsParser, DnsProtocol};
+use crate::protocols::dns::{DnsParser, UdpDnsParser};
 
 /// 驱动配置
 pub struct DriverConfig {
@@ -18,10 +17,6 @@ pub struct DriverConfig {
     pub capture: CaptureConfig,
     /// 输出配置
     pub output: OutputConfig,
-    /// 内存池大小
-    pub mempool_size: usize,
-    /// 最大包大小
-    pub max_packet_size: usize,
     /// 统计输出间隔（秒）
     pub stats_interval: u64,
     /// 工作线程数
@@ -58,30 +53,17 @@ impl Driver {
             *running = true;
         }
 
-        // 创建内存池
-        let mempool = Arc::new(Mutex::new(MemoryPool::new(
-            self.config.mempool_size,
-            self.config.max_packet_size,
-        )));
-
         // 创建协议检测器
         let detector = Arc::new(Mutex::new(ProtocolDetector::new()));
+
+        // 创建DNS解析器
+        let dns_parser = Arc::new(Mutex::new(UdpDnsParser::new(65535)));
 
         // 创建输出管理器
         let output_manager = Arc::new(Mutex::new(OutputManager::new(self.config.output.clone())));
 
         // 创建捕获实例
-        let mut capture = match PacketCapture::new(self.config.capture.clone()) {
-            Ok(capture) => capture,
-            Err(e) => {
-                let mut running = self.running.lock().unwrap();
-                *running = false;
-                return Err(crate::error::Error::Capture(format!(
-                    "Failed to create packet capture: {}",
-                    e
-                )));
-            }
-        };
+        let capture = create_capture(self.config.capture.clone(), Arc::clone(&self.stats));
 
         // 创建统计线程
         let stats_clone = Arc::clone(&self.stats);
@@ -96,7 +78,7 @@ impl Driver {
 
                 let now = Instant::now();
                 if now.duration_since(last_stats).as_secs() >= stats_interval {
-                    let stats = stats_clone.lock().unwrap();
+                    let mut stats = stats_clone.lock().unwrap();
                     stats.print_and_reset();
                     last_stats = now;
                 }
@@ -106,43 +88,60 @@ impl Driver {
         // 创建工作线程
         let mut worker_handles = Vec::new();
 
+        // 将capture包装在Arc<Mutex<>>中以便多线程共享
+        let capture = Arc::new(Mutex::new(capture));
+
         for _ in 0..self.config.worker_threads {
-            let mempool_clone = Arc::clone(&mempool);
             let detector_clone = Arc::clone(&detector);
+            let dns_parser_clone = Arc::clone(&dns_parser);
             let output_clone = Arc::clone(&output_manager);
             let stats_clone = Arc::clone(&self.stats);
             let running_clone = Arc::clone(&self.running);
+            let capture_clone = Arc::clone(&capture);
 
             let handle = thread::spawn(move || {
                 while *running_clone.lock().unwrap() {
-                    // 从内存池获取数据包
-                    let packet = {
-                        let mut pool = mempool_clone.lock().unwrap();
-                        pool.get_next_packet()
+                    // 从捕获器获取数据包
+                    let packets = {
+                        let mut capture = capture_clone.lock().unwrap();
+                        capture.receive_packets(10)
                     };
 
-                    if let Some(packet) = packet {
+                    for packet_data in packets {
                         // 检测协议
                         let result = {
                             let detector = detector_clone.lock().unwrap();
-                            detector.detect(&packet.data, packet.src_port, packet.dst_port)
+                            detector.detect(&packet_data, 53, 53) // 简化：假设都是DNS端口
                         };
 
                         // 处理检测结果
                         match result {
                             crate::protocols::detect::ProtocolDetectResult::Dns(protocol) => {
-                                // 根据协议类型处理
-                                let mut stats = stats_clone.lock().unwrap();
-                                stats.increment("packet.processed");
+                                // 解析DNS消息
+                                let dns_message = {
+                                    let mut parser = dns_parser_clone.lock().unwrap();
+                                    let mut stats = stats_clone.lock().unwrap();
+                                    parser.parse(&packet_data, &mut stats)
+                                };
 
-                                // 输出结果
-                                let mut output = output_clone.lock().unwrap();
-                                output.output_packet(&packet, &protocol);
+                                if let Some(message) = dns_message {
+                                    // 更新统计
+                                    {
+                                        let mut stats = stats_clone.lock().unwrap();
+                                        stats.increment("packet.processed");
+                                    }
+
+                                    // 输出结果
+                                    {
+                                        let mut output = output_clone.lock().unwrap();
+                                        let _ = output.output(&message);
+                                    }
+                                }
                             }
                             crate::protocols::detect::ProtocolDetectResult::NeedMoreData => {
-                                // 需要更多数据，放回内存池
-                                let mut pool = mempool_clone.lock().unwrap();
-                                pool.return_packet(packet);
+                                // 需要更多数据，暂时跳过
+                                let mut stats = stats_clone.lock().unwrap();
+                                stats.increment("packet.need_more_data");
                             }
                             crate::protocols::detect::ProtocolDetectResult::Unknown => {
                                 // 未知协议，丢弃
@@ -150,10 +149,10 @@ impl Driver {
                                 stats.increment("packet.unknown");
                             }
                         }
-                    } else {
-                        // 没有数据包，等待
-                        thread::sleep(Duration::from_millis(1));
                     }
+
+                    // 短暂休眠避免CPU占用过高
+                    thread::sleep(Duration::from_millis(1));
                 }
             });
 
@@ -161,10 +160,25 @@ impl Driver {
         }
 
         // 启动捕获
-        if let Err(e) = capture.start(mempool) {
+        if let Err(e) = {
+            let mut capture = capture.lock().unwrap();
+            capture.initialize()
+        } {
             let mut running = self.running.lock().unwrap();
             *running = false;
-            return Err(format!("Failed to start capture: {}", e));
+            return Err(crate::error::Error::Capture(format!(
+                "Failed to initialize capture: {}", e
+            )));
+        }
+        if let Err(e) = {
+            let mut capture = capture.lock().unwrap();
+            capture.start_capture()
+        } {
+            let mut running = self.running.lock().unwrap();
+            *running = false;
+            return Err(crate::error::Error::Capture(format!(
+                "Failed to start capture: {}", e
+            )));
         }
 
         // 等待所有工作线程完成

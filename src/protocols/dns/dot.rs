@@ -72,29 +72,24 @@ impl DotParser {
         // 会话标识
         let session_id = (src_ip, dst_ip, src_port, dst_port);
         
-        // 获取或创建会话
-        let session = self.tls_sessions.entry(session_id).or_insert_with(|| {
-            // 如果超过最大会话数，清理最旧的会话
+        // 在闭包外先做清理
+        if self.tls_sessions.len() >= self.max_sessions {
+            self.cleanup_sessions();
             if self.tls_sessions.len() >= self.max_sessions {
-                self.cleanup_sessions();
-                
-                // 如果仍然超过限制，移除最旧的会话
-                if self.tls_sessions.len() >= self.max_sessions {
-                    let oldest = self.tls_sessions.iter()
-                        .min_by_key(|(_, s)| s.last_seen)
-                        .map(|(k, _)| *k);
-                    
-                    if let Some(key) = oldest {
-                        self.tls_sessions.remove(&key);
-                    }
+                let oldest = self.tls_sessions.iter()
+                    .min_by_key(|(_, s)| s.last_seen)
+                    .map(|(k, _)| *k);
+                if let Some(key) = oldest {
+                    self.tls_sessions.remove(&key);
                 }
             }
-            
-            TlsSession {
-                buffer: Vec::new(),
-                state: TlsState::Handshake,
-                last_seen: self.current_time_ms,
-            }
+        }
+
+        // 然后只在闭包里构造新会话
+        let session = self.tls_sessions.entry(session_id).or_insert_with(|| TlsSession {
+            buffer: Vec::new(),
+            state: TlsState::Handshake,
+            last_seen: self.current_time_ms,
         });
         
         // 更新最后见到时间

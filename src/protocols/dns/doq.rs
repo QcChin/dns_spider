@@ -71,29 +71,24 @@ impl DoqParser {
         // 会话标识
         let session_id = (src_ip, dst_ip, src_port, dst_port);
         
-        // 获取或创建会话
-        let session = self.quic_sessions.entry(session_id).or_insert_with(|| {
-            // 如果超过最大会话数，清理最旧的会话
+        // 在闭包外先做清理
+        if self.quic_sessions.len() >= self.max_sessions {
+            self.cleanup_sessions();
             if self.quic_sessions.len() >= self.max_sessions {
-                self.cleanup_sessions();
-                
-                // 如果仍然超过限制，移除最旧的会话
-                if self.quic_sessions.len() >= self.max_sessions {
-                    let oldest = self.quic_sessions.iter()
-                        .min_by_key(|(_, s)| s.last_seen)
-                        .map(|(k, _)| *k);
-                    
-                    if let Some(key) = oldest {
-                        self.quic_sessions.remove(&key);
-                    }
+                let oldest = self.quic_sessions.iter()
+                    .min_by_key(|(_, s)| s.last_seen)
+                    .map(|(k, _)| *k);
+                if let Some(key) = oldest {
+                    self.quic_sessions.remove(&key);
                 }
             }
-            
-            QuicSession {
-                buffer: Vec::new(),
-                state: QuicState::Handshake,
-                last_seen: self.current_time_ms,
-            }
+        }
+
+        // 然后只在闭包里构造新会话
+        let session = self.quic_sessions.entry(session_id).or_insert_with(|| QuicSession {
+            buffer: Vec::new(),
+            state: QuicState::Handshake,
+            last_seen: self.current_time_ms,
         });
         
         // 更新最后见到时间

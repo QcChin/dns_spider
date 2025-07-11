@@ -126,6 +126,16 @@ impl MemoryPool {
             block_size: self.block_size,
         }
     }
+
+    /// 获取下一个可用的内存块
+    pub fn get(&mut self) -> Option<MemoryBlock> {
+        self.allocate()
+    }
+
+    /// 归还内存块到池中
+    pub fn put(&mut self, block: MemoryBlock) {
+        self.free(block);
+    }
 }
 
 /// 内存池统计信息
@@ -139,13 +149,4 @@ pub struct MemoryPoolStats {
     pub allocated_blocks: usize,
     /// 块大小
     pub block_size: usize,
-}
-
-impl Clone for MemoryBlock {
-    fn clone(&self) -> Self {
-        MemoryBlock {
-            data: self.data.clone(),
-            used: self.used,
-        }
-    }
 }

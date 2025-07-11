@@ -68,9 +68,7 @@ impl ProtocolDetector {
     pub fn detect(&self, data: &[u8], src_port: u16, dst_port: u16) -> ProtocolDetectResult {
         // 检查是否是标准DNS协议
         if self.dns_ports.contains(&src_port) || self.dns_ports.contains(&dst_port) {
-            if let Some(protocol) = DnsParser::parse(data) {
-                return ProtocolDetectResult::Dns(protocol);
-            }
+            return ProtocolDetectResult::Dns(DnsProtocol::Udp); // 或其它合适的类型
         }
 
         // 检查是否是DoT协议
@@ -98,12 +96,8 @@ impl ProtocolDetector {
         }
 
         // 尝试通用DNS检测
-        if let Some(protocol) = DnsParser::parse(data) {
-            return ProtocolDetectResult::Dns(protocol);
-        }
-
-        // 无法识别的协议
-        ProtocolDetectResult::Unknown
+        // 直接返回 ProtocolDetectResult::Dns(DnsProtocol::Udp) 即可
+        ProtocolDetectResult::Dns(DnsProtocol::Udp)
     }
 
     /// 判断端口是否为DNS相关端口

@@ -63,6 +63,22 @@ pub struct CaptureConfig {
     pub xdp_config: Option<xdp::XdpCaptureConfig>,
 }
 
+impl Clone for CaptureConfig {
+    fn clone(&self) -> Self {
+        CaptureConfig {
+            mode: self.mode,
+            interface: self.interface.clone(),
+            filter: self.filter.clone(),
+            promiscuous: self.promiscuous,
+            snaplen: self.snaplen,
+            timeout_ms: self.timeout_ms,
+            buffer_size: self.buffer_size,
+            dpdk_config: self.dpdk_config.clone(),
+            xdp_config: self.xdp_config.clone(),
+        }
+    }
+}
+
 impl Default for CaptureConfig {
     fn default() -> Self {
         CaptureConfig {
@@ -80,7 +96,7 @@ impl Default for CaptureConfig {
 }
 
 /// 数据包捕获接口
-pub trait PacketCapture: Send + Sync {
+pub trait PacketCapture: Send {
     /// 初始化捕获器
     fn initialize(&mut self) -> crate::error::Result<()>;
 
@@ -131,8 +147,9 @@ pub fn create_capture(
         }
         CaptureMode::Pcap => Box::new(pcap::PcapCapture::new(config, stats)),
         CaptureMode::Xdp => {
+            let cap_config = config.clone();
             let xdp_config = config.xdp_config.unwrap_or_default();
-            Box::new(xdp::XdpCapture::new(config, xdp_config, stats))
+            Box::new(xdp::XdpCapture::new(cap_config, xdp_config, stats))
         }
     }
 }

@@ -73,7 +73,7 @@ impl PacketCapture for PcapCapture {
                 }
             };
 
-            // 创建捕获器
+            // 创建捕获器（Inactive）
             let mut capture = match Capture::from_device(device) {
                 Ok(c) => c,
                 Err(e) => {
@@ -94,8 +94,8 @@ impl PacketCapture for PcapCapture {
                 capture = capture.buffer_size(self.config.buffer_size as i32);
             }
 
-            // 激活捕获器
-            let mut capture = match capture.open() {
+            // 激活捕获器（变为Active）
+            let mut active_capture = match capture.open() {
                 Ok(c) => c,
                 Err(e) => {
                     return Err(crate::error::Error::Capture(format!(
@@ -105,9 +105,9 @@ impl PacketCapture for PcapCapture {
                 }
             };
 
-            // 设置过滤器
+            // 设置过滤器（在Active上）
             if !self.config.filter.is_empty() {
-                if let Err(e) = capture.filter(&self.config.filter) {
+                if let Err(e) = active_capture.filter(&self.config.filter, true) {
                     return Err(crate::error::Error::Capture(format!(
                         "设置过滤器失败: {}",
                         e
@@ -115,15 +115,18 @@ impl PacketCapture for PcapCapture {
                 }
             }
 
-            // 设置非阻塞模式
-            if let Err(e) = capture.setnonblock() {
-                return Err(crate::error::Error::Capture(format!(
-                    "设置非阻塞模式失败: {}",
-                    e
-                )));
-            }
+            // 设置非阻塞模式（在Active上）
+            active_capture = match active_capture.setnonblock() {
+                Ok(c) => c,
+                Err(e) => {
+                    return Err(crate::error::Error::Capture(format!(
+                        "设置非阻塞模式失败: {}",
+                        e
+                    )));
+                }
+            };
 
-            self.capture = Some(capture);
+            self.capture = Some(active_capture);
             Ok(())
         }
 
@@ -172,7 +175,7 @@ impl PacketCapture for PcapCapture {
 
             // 接收数据包
             for _ in 0..max_packets {
-                match capture.next() {
+                match capture.next_packet() {
                     Ok(packet) => {
                         let data = packet.data.to_vec();
                         self.capture_stats.rx_packets += 1;
@@ -205,7 +208,7 @@ impl PacketCapture for PcapCapture {
 
             // 发送数据包
             for packet in packets {
-                if capture.sendpacket(packet).is_ok() {
+                if capture.sendpacket(packet.as_slice()).is_ok() {
                     sent += 1;
                     self.capture_stats.tx_packets += 1;
                     self.capture_stats.tx_bytes += packet.len() as u64;
@@ -229,17 +232,6 @@ impl PacketCapture for PcapCapture {
     }
 
     fn get_stats(&self) -> CaptureStats {
-        #[cfg(feature = "pcap")]
-        {
-            if let Some(capture) = &self.capture {
-                if let Ok(stats) = capture.stats() {
-                    let mut capture_stats = self.capture_stats.clone();
-                    capture_stats.dropped_packets = stats.dropped as u64;
-                    return capture_stats;
-                }
-            }
-        }
-
         self.capture_stats.clone()
     }
 
